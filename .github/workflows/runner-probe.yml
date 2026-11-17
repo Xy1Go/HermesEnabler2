@@ -6,20 +6,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "ubuntu ok"
-  macos:
-    runs-on: macos-latest
+  macos15:
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - name: Build unsigned IPA
-        run: |
-          chmod +x scripts/create_ipa.sh
-          ./scripts/create_ipa.sh --bundle-id com.custom.HermesEnabler --output build/ipa/HermesEnabler-watchOS26.6.1.ipa
-      - name: Inspect IPA
-        run: |
-          ls -lh build/ipa/
-          unzip -l build/ipa/HermesEnabler-watchOS26.6.1.ipa | grep -E "Watch/" | head -20
-      - uses: actions/upload-artifact@v4
-        with:
-          name: HermesEnabler-watchOS26.6.1-WatchBridge
-          path: build/ipa/*.ipa
-          if-no-files-found: error
+      - run: xcodebuild -version || true
+  macos26intel:
+    runs-on: macos-26-intel
+    steps:
+      - run: xcodebuild -version || true
