@@ -1016,29 +1016,68 @@ static BOOL bq_write_all(int fd, const uint8_t *buf, size_t len) {
 
 static BOOL bq_write_data(NSString *path, NSData *data, NSString **err) {
     NSData *original = [NSData dataWithContentsOfFile:path];
+    int eNoFollow = 0, eFollow = 0, eDirect = 0;
+
+    // Strategy 1/2: in-place truncate. First without following symlinks (original
+    // behaviour), then following them, because the escaped path is often a symlink.
     if (BQInPlaceWrite()) {
-        int fd = open(path.fileSystemRepresentation, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
-        if (fd >= 0) {
+        int flagsList[2] = { O_RDWR | O_CLOEXEC | O_NOFOLLOW, O_RDWR | O_CLOEXEC };
+        const char *flagNames[2] = { "nofollow", "follow" };
+        for (int i = 0; i < 2; i++) {
+            int fd = open(path.fileSystemRepresentation, flagsList[i]);
+            if (fd < 0) {
+                if (i == 0) eNoFollow = errno; else eFollow = errno;
+                BQLog(@"in-place open failed (%s): %s", flagNames[i], strerror(errno));
+                continue;
+            }
             BOOL ok = (ftruncate(fd, 0) == 0) &&
                       bq_write_all(fd, data.bytes, data.length) &&
                       (fsync(fd) == 0);
             if (!ok && original.length) {
-                BQLog(@"in-place write failed; rolling back original (%lu bytes)", (unsigned long)original.length);
+                BQLog(@"in-place write failed (%s); rolling back original (%lu bytes)",
+                      flagNames[i], (unsigned long)original.length);
                 ftruncate(fd, 0);
                 lseek(fd, 0, SEEK_SET);
                 bq_write_all(fd, original.bytes, original.length);
                 fsync(fd);
             }
             close(fd);
-            if (ok) return YES;
-            BQLog(@"in-place write failed, falling back to atomic");
-        } else {
-            BQLog(@"in-place open failed: %s", strerror(errno));
+            if (ok) {
+                BQLog(@"write ok via in-place/%s", flagNames[i]);
+                return YES;
+            }
         }
     }
+
+    // Strategy 3: create/truncate the file directly. This works when the parent
+    // directory rejects new entries but the file node itself is writable.
+    int dfd = open(path.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (dfd >= 0) {
+        BOOL ok = bq_write_all(dfd, data.bytes, data.length) && (fsync(dfd) == 0);
+        close(dfd);
+        if (ok) {
+            BQLog(@"write ok via direct truncate");
+            return YES;
+        }
+        BQLog(@"direct truncate write failed");
+    } else {
+        eDirect = errno;
+        BQLog(@"direct open failed: %s", strerror(errno));
+    }
+
+    // Strategy 4: temp file + rename (original fallback).
     NSString *tmp = [path stringByAppendingString:@".bqtmp"];
-    if (![data writeToFile:tmp atomically:NO]) {
-        if (err) *err = NSLocalizedString(@"temp write failed", nil);
+    NSError *writeError = nil;
+    if (![data writeToFile:tmp options:0 error:&writeError]) {
+        NSError *under = writeError.userInfo[NSUnderlyingErrorKey];
+        NSInteger tmpCode = writeError.code;
+        int tmpPosix = under ? (int)under.code : 0;
+        BQLog(@"temp write failed: %@ (posix %d)", writeError.localizedDescription, tmpPosix);
+        if (err) {
+            *err = [NSString stringWithFormat:@"%@ [nf=%d fl=%d dr=%d tp=%ld/%d]",
+                    NSLocalizedString(@"temp write failed", nil),
+                    eNoFollow, eFollow, eDirect, (long)tmpCode, tmpPosix];
+        }
         return NO;
     }
     int fd = open(tmp.fileSystemRepresentation, O_RDONLY);
