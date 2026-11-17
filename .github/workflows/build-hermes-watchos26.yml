@@ -1,1 +1,57 @@
+name: Build HermesEnabler IPA (watchOS 26.6.1)
 
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: 'iOS companion bundle ID (watch ID becomes IDENTIFIER.watchkitapp)'
+        required: true
+        default: 'com.custom.HermesEnabler'
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          echo "--- SDKs ---"
+          xcodebuild -showsdks || true
+          echo "--- watchOS platform ---"
+          xcodebuild -showsdks 2>/dev/null | grep -i watchos || echo "::error::watchOS SDK not found"
+
+      - name: Build unsigned IPA
+        run: |
+          set -euo pipefail
+          chmod +x scripts/create_ipa.sh
+          ./scripts/create_ipa.sh \
+            --bundle-id "${{ inputs.bundle_id }}" \
+            --output "build/ipa/HermesEnabler-watchOS26.6.1.ipa"
+
+      - name: Verify embedded Watch app
+        run: |
+          set -euo pipefail
+          ls -lh build/ipa/
+          unzip -l "build/ipa/HermesEnabler-watchOS26.6.1.ipa" | tee /tmp/ipa-list.txt
+          grep -E "Payload/HermesCompanion\.app/Watch/[^/]+\.app/" /tmp/ipa-list.txt > /dev/null \
+            || { echo "::error::embedded Watch app missing from IPA"; exit 1; }
+          if grep -q "embedded.mobileprovision" /tmp/ipa-list.txt; then
+            echo "::error::provisioning profile present, IPA is not unsigned"
+            exit 1
+          fi
+          echo "OK: unsigned IPA with nested Watch app"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HermesEnabler-watchOS26.6.1-WatchBridge
+          path: build/ipa/*.ipa
+          if-no-files-found: error
+          retention-days: 14
