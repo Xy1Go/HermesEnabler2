@@ -65,7 +65,14 @@ jobs:
             echo "::error::provisioning profile present, IPA is not unsigned"
             exit 1
           fi
-          echo "OK: unsigned IPA with nested Watch app"
+          rm -rf /tmp/ipa-x && mkdir -p /tmp/ipa-x
+          unzip -q "build/ipa/HermesEnabler-watchOS26.6.1.ipa" -d /tmp/ipa-x
+          WATCH_PLIST="$(find /tmp/ipa-x/Payload/HermesCompanion.app/Watch -maxdepth 2 -name Info.plist -print -quit)"
+          echo "--- watch Info.plist ---"
+          /usr/libexec/PlistBuddy -c "Print" "$WATCH_PLIST"
+          /usr/libexec/PlistBuddy -c "Print :WKSupportsAlwaysOnDisplay" "$WATCH_PLIST" > /dev/null \
+            || { echo "::error::WKSupportsAlwaysOnDisplay missing"; exit 1; }
+          echo "OK: unsigned IPA with nested Watch app + Always-On support"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

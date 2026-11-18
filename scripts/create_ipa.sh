@@ -100,6 +100,16 @@ if [[ -z "$watch_app" ]]; then
     exit 1
 fi
 
+# INFOPLIST_KEY_* is not honoured for WKSupportsAlwaysOnDisplay by the watchOS
+# plist generator, so inject it explicitly. Without it the app is blacked out
+# when the wrist is lowered instead of showing the Always-On (tritium) state.
+watch_plist="$watch_app/Info.plist"
+if [[ -f "$watch_plist" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :WKSupportsAlwaysOnDisplay bool true" "$watch_plist" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Set :WKSupportsAlwaysOnDisplay true" "$watch_plist"
+    echo "Injected WKSupportsAlwaysOnDisplay = $(/usr/libexec/PlistBuddy -c 'Print :WKSupportsAlwaysOnDisplay' "$watch_plist")"
+fi
+
 if find "$app_path" -name embedded.mobileprovision -print -quit | grep -q .; then
     echo "A provisioning profile was embedded; refusing to label this IPA unsigned." >&2
     exit 1
