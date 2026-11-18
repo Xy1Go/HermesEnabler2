@@ -322,7 +322,6 @@ BOOL BQCoreInit(void) {
                                   withIntermediateDirectories:YES attributes:nil error:nil];
         if (gLogPath) [[NSFileManager defaultManager] createFileAtPath:gLogPath contents:nil attributes:nil];
         NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
-        // watchOS 26.6.x adaptation: enable class2-parent unless the user explicitly disabled it.
         if ([defs objectForKey:@"BQClass2ParentEnabled"] == nil) {
             [defs setBool:YES forKey:@"BQClass2ParentEnabled"];
         }
@@ -659,7 +658,7 @@ int64_t BQEscape(NSString *target, NSString **linkOut) {
                 BQLog(@"escape: using bad_query traversal -> %@", p ?: target);
                 return h;
             }
-            // watchOS 26.6.x extended traversal / flag probe
+            // WatchOS 26.6.x extended traversal & flag probe
             NSArray<NSNumber *> *extraDots = @[@6, @10, @12, @14];
             uint64_t extraFlags[2] = { 0x8100000000ULL, 0x0800000000ULL };
             for (NSNumber *dotCount in extraDots) {
@@ -667,13 +666,11 @@ int64_t BQEscape(NSString *target, NSString **linkOut) {
                 for (int fi = 0; fi < 2; fi++) {
                     NSString *altPath = nil;
                     int64_t altHandle = bq_query_escape(13, kMGGroup, YES, 3, altDomain, extraFlags[fi],
-                                                        [NSString stringWithFormat:@"class13-26x-d%d-f%d",
-                                                         dotCount.intValue, fi], &altPath);
+                                                        [NSString stringWithFormat:@"class13-26x-d%@-f%d", dotCount, fi], &altPath);
                     if (altHandle >= 0) {
                         gTraversalState = 1;
                         if (linkOut) *linkOut = altPath ?: target;
-                        BQLog(@"escape: using extended 26.x traversal (dots=%d flags=%#llx) -> %@",
-                              dotCount.intValue, extraFlags[fi], altPath ?: target);
+                        BQLog(@"escape: using extended 26.x traversal (%@ / %#llx) -> %@", dotCount, extraFlags[fi], altPath ?: target);
                         return altHandle;
                     }
                 }
@@ -1016,68 +1013,29 @@ static BOOL bq_write_all(int fd, const uint8_t *buf, size_t len) {
 
 static BOOL bq_write_data(NSString *path, NSData *data, NSString **err) {
     NSData *original = [NSData dataWithContentsOfFile:path];
-    int eNoFollow = 0, eFollow = 0, eDirect = 0;
-
-    // Strategy 1/2: in-place truncate. First without following symlinks (original
-    // behaviour), then following them, because the escaped path is often a symlink.
     if (BQInPlaceWrite()) {
-        int flagsList[2] = { O_RDWR | O_CLOEXEC | O_NOFOLLOW, O_RDWR | O_CLOEXEC };
-        const char *flagNames[2] = { "nofollow", "follow" };
-        for (int i = 0; i < 2; i++) {
-            int fd = open(path.fileSystemRepresentation, flagsList[i]);
-            if (fd < 0) {
-                if (i == 0) eNoFollow = errno; else eFollow = errno;
-                BQLog(@"in-place open failed (%s): %s", flagNames[i], strerror(errno));
-                continue;
-            }
+        int fd = open(path.fileSystemRepresentation, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+        if (fd >= 0) {
             BOOL ok = (ftruncate(fd, 0) == 0) &&
                       bq_write_all(fd, data.bytes, data.length) &&
                       (fsync(fd) == 0);
             if (!ok && original.length) {
-                BQLog(@"in-place write failed (%s); rolling back original (%lu bytes)",
-                      flagNames[i], (unsigned long)original.length);
+                BQLog(@"in-place write failed; rolling back original (%lu bytes)", (unsigned long)original.length);
                 ftruncate(fd, 0);
                 lseek(fd, 0, SEEK_SET);
                 bq_write_all(fd, original.bytes, original.length);
                 fsync(fd);
             }
             close(fd);
-            if (ok) {
-                BQLog(@"write ok via in-place/%s", flagNames[i]);
-                return YES;
-            }
+            if (ok) return YES;
+            BQLog(@"in-place write failed, falling back to atomic");
+        } else {
+            BQLog(@"in-place open failed: %s", strerror(errno));
         }
     }
-
-    // Strategy 3: create/truncate the file directly. This works when the parent
-    // directory rejects new entries but the file node itself is writable.
-    int dfd = open(path.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-    if (dfd >= 0) {
-        BOOL ok = bq_write_all(dfd, data.bytes, data.length) && (fsync(dfd) == 0);
-        close(dfd);
-        if (ok) {
-            BQLog(@"write ok via direct truncate");
-            return YES;
-        }
-        BQLog(@"direct truncate write failed");
-    } else {
-        eDirect = errno;
-        BQLog(@"direct open failed: %s", strerror(errno));
-    }
-
-    // Strategy 4: temp file + rename (original fallback).
     NSString *tmp = [path stringByAppendingString:@".bqtmp"];
-    NSError *writeError = nil;
-    if (![data writeToFile:tmp options:0 error:&writeError]) {
-        NSError *under = writeError.userInfo[NSUnderlyingErrorKey];
-        NSInteger tmpCode = writeError.code;
-        int tmpPosix = under ? (int)under.code : 0;
-        BQLog(@"temp write failed: %@ (posix %d)", writeError.localizedDescription, tmpPosix);
-        if (err) {
-            *err = [NSString stringWithFormat:@"%@ [nf=%d fl=%d dr=%d tp=%ld/%d]",
-                    NSLocalizedString(@"temp write failed", nil),
-                    eNoFollow, eFollow, eDirect, (long)tmpCode, tmpPosix];
-        }
+    if (![data writeToFile:tmp atomically:NO]) {
+        if (err) *err = NSLocalizedString(@"temp write failed", nil);
         return NO;
     }
     int fd = open(tmp.fileSystemRepresentation, O_RDONLY);

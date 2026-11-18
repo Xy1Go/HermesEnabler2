@@ -1,4 +1,4 @@
-name: Build HermesEnabler IPA (watchOS 26.6.1)
+name: Build HermesEnabler IPA (watchOS 26.6.1 + PR93)
 
 on:
   workflow_dispatch:
@@ -7,9 +7,16 @@ on:
         description: 'iOS companion bundle ID (watch ID becomes IDENTIFIER.watchkitapp)'
         required: true
         default: 'com.custom.HermesEnabler'
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
+
+concurrency:
+  group: hermes-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-unsigned-ipa:
@@ -27,12 +34,24 @@ jobs:
           echo "--- watchOS platform ---"
           xcodebuild -showsdks 2>/dev/null | grep -i watchos || echo "::error::watchOS SDK not found"
 
+      - name: Verify PR93 sources are present
+        run: |
+          set -euo pipefail
+          for f in HermesEnabler2/BQOriginalHermes.h \
+                   HermesEnabler2/BQOriginalHermes.m \
+                   HermesEnabler2/OriginalHermesView.swift; do
+            test -f "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          grep -q "Original Hermès (App Only)" HermesEnabler2/WatchFacesView.swift \
+            || { echo "::error::Original Hermès entry missing from WatchFacesView"; exit 1; }
+          echo "OK: PR93 sources in place"
+
       - name: Build unsigned IPA
         run: |
           set -euo pipefail
           chmod +x scripts/create_ipa.sh
           ./scripts/create_ipa.sh \
-            --bundle-id "${{ inputs.bundle_id }}" \
+            --bundle-id "${{ inputs.bundle_id || 'com.custom.HermesEnabler' }}" \
             --output "build/ipa/HermesEnabler-watchOS26.6.1.ipa"
 
       - name: Verify embedded Watch app
